@@ -2,15 +2,15 @@
 
 declare(strict_types=1);
 
-namespace UniGale\Foundation\Options;
+namespace UniGale\Foundation\Utilities;
 
 use Closure;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Database\QueryException;
-use UniGale\Foundation\Contracts\OptionsStore;
 use UniGale\Foundation\Models\Option;
+use UniGale\Support\Contracts\OptionsStore;
 
-class DatabaseStore implements OptionsStore
+class DatabaseOptionStore implements OptionsStore
 {
     public function get(string $key, ?string $moduleIdentifier = null): mixed
     {
@@ -77,43 +77,27 @@ class DatabaseStore implements OptionsStore
     }
 
     /**
-     * Bulk retrieval for global and module-scoped keys.
-     *
-     * @param  array<string>  $globalKeys  Keys to fetch globally
-     * @param  array<string, array<string>>  $modulesKeys  Keys per module
-     * @return array{
-     *     global: array<string, mixed>,
-     *     modules: array<string, array<string, mixed>>
-     * }
+     * {@inheritDoc}
      */
-    public function getMultiples(array $globalKeys = [], array $modulesKeys = []): array
+    public function getMultiples(array $groupedKeys = []): array
     {
-        $result = [
-            'global'  => [],
-            'modules' => [],
-        ];
+        $result = [];
 
         if (empty($globalKeys) && empty($modulesKeys)) {
             return $result;
         }
 
         $query = Option::query()->where(0, '=', 1); // <- prevent loading all
-        if (! empty($globalKeys)) {
-            $query->orWhere(fn (Builder $q) => $q->whereNull('module_identifier')->whereIn('key', $globalKeys));
-        }
-        foreach ($modulesKeys as $moduleIdentifier => $keys) {
-            if (empty($keys)) {
+
+        foreach ($groupedKeys as $moduleIdentifier => $moduleKeys) {
+            if (empty($moduleKeys)) {
                 continue;
             }
-            $query->orWhere(fn (Builder $q) => $q->where('module_identifier', $moduleIdentifier)->whereIn('key', $keys));
+            $query->orWhere(fn (Builder $q) => $q->where('module_identifier', $moduleIdentifier)->whereIn('key', $moduleKeys));
         }
 
         foreach ($query->get(['key', 'value', 'module_identifier']) as $option) {
-            if ($option->module_identifier === null) {
-                $result['global'][$option->key] = $option->value;
-            } else {
-                $result['modules'][$option->module_identifier][$option->key] = $option->value;
-            }
+            $result[$option->module_identifier][$option->key] = $option->value;
         }
 
         return $result;

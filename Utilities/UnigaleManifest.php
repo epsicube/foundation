@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace UniGale\Foundation;
+namespace UniGale\Foundation\Utilities;
 
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Collection;
@@ -22,11 +22,6 @@ class UnigaleManifest
     public array $manifest;
 
     public function __construct(protected Filesystem $files, protected string $vendorPath, protected string $manifestPath) {}
-
-    public function modules(): array
-    {
-        return $this->config('modules');
-    }
 
     public function config(string $key): array
     {

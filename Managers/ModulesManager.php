@@ -2,31 +2,27 @@
 
 declare(strict_types=1);
 
-namespace UniGale\Foundation\Registries;
+namespace UniGale\Foundation\Managers;
 
 use Illuminate\Contracts\Foundation\Application;
+use Illuminate\Support\ServiceProvider;
 use RuntimeException;
 use Throwable;
-use UniGale\Foundation\Concerns\Registry;
-use UniGale\Foundation\Contracts\ActivationDriver;
-use UniGale\Foundation\Contracts\HasDependencies;
-use UniGale\Foundation\Contracts\HasIntegrations;
-use UniGale\Foundation\Contracts\Module;
-use UniGale\Foundation\Contracts\Registrable;
-use UniGale\Foundation\Exceptions\CircularDependencyException;
-use UniGale\Foundation\IntegrationsManager;
+use UniGale\Support\Contracts\ActivationDriver;
+use UniGale\Support\Contracts\HasDependencies;
+use UniGale\Support\Contracts\HasIntegrations;
+use UniGale\Support\Contracts\Module;
+use UniGale\Support\Exceptions\CircularDependencyException;
+use UniGale\Support\Registry;
 
 /**
  * @extends Registry<Module>
  */
-class ModulesRegistry extends Registry
+class ModulesManager extends Registry
 {
-    protected IntegrationsManager $integrations;
-
-    public function __construct(protected ActivationDriver $driver)
-    {
-        $this->integrations = new IntegrationsManager;
-    }
+    public function __construct(
+        protected ActivationDriver $driver,
+    ) {}
 
     public function getRegistrableType(): string
     {
@@ -41,11 +37,6 @@ class ModulesRegistry extends Registry
     public function getDriver(): ActivationDriver
     {
         return $this->driver;
-    }
-
-    public function integrations(): IntegrationsManager
-    {
-        return $this->integrations;
     }
 
     /**
@@ -152,11 +143,9 @@ class ModulesRegistry extends Registry
     public function isMustUse(string|Module $module): bool
     {
         if (is_string($module)) {
-            $resolved = $this->safeGet($module);
-            if (! $resolved) {
+            if (! $module = $this->safeGet($module)) {
                 return false; // Unknown identifier is not MU
             }
-            $module = $resolved;
         }
 
         return $this->driver->isMustUse($module);
@@ -306,40 +295,34 @@ class ModulesRegistry extends Registry
         }
     }
 
-    protected function registerItem(string $identifier, Registrable $item): void
-    {
-        parent::registerItem($identifier, $item);
-
-        if ($item instanceof HasIntegrations) {
-            $this->integrations->beginRecording($identifier);
-            $item->integrations($this->integrations);
-            $this->integrations->endRecording();
-        }
-    }
-
     public function registerInApp(Application $app): void
     {
         $enabledModules = $this->enabled();
         foreach ($enabledModules as $module) {
+            if (! is_a($module, ServiceProvider::class)) {
+                throw new RuntimeException(sprintf('module [%s] is not instance of [%s].', get_class($module), ServiceProvider::class));
+            }
             $app->register($module);
         }
 
-        $this->integrations->runCallbacks(array_keys($enabledModules));
-    }
+        // Run integrations
+        foreach ($enabledModules as $module) {
+            if (! ($module instanceof HasIntegrations)) {
+                continue;
+            }
 
-    /**
-     * Retourne la liste des identifiers de modules visés par les intégrations
-     * enregistrées par le module fourni.
-     *
-     * @return string[]
-     */
-    public function integrationsOf(string|Module $module): array
-    {
-        if (is_string($module)) {
-            $module = $this->get($module);
+            foreach ($module->integrations()->registrations() as $target => $callbacks) {
+                if (isset($enabledModules[$target])) {
+                    foreach ($callbacks['enabled'] as $cb) {
+                        $cb();
+                    }
+                } else {
+                    foreach ($callbacks['disabled'] as $cb) {
+                        $cb();
+                    }
+                }
+            }
         }
-
-        return $this->integrations->registeredModulesFor($module->identifier());
     }
 
     /**
@@ -353,11 +336,12 @@ class ModulesRegistry extends Registry
             $module = $this->get($module);
         }
 
-        if ($module instanceof HasDependencies) {
-            return array_values(array_filter(array_map('strval', $module->dependencies())));
+        if (! ($module instanceof HasDependencies)) {
+            return [];
+
         }
 
-        return [];
+        return $module->dependencies()->requiredModules();
     }
 
     /**
@@ -550,37 +534,5 @@ class ModulesRegistry extends Registry
             // A detected cycle is considered unresolved
             return true;
         }
-    }
-
-    /**
-     * Return details about missing dependencies: unknown vs not-enabled.
-     * This is useful for UI messaging.
-     *
-     * @return array{missing: string[], unknown: string[]}
-     */
-    public function missingDependencyDetails(string|Module $module): array
-    {
-        if (is_string($module)) {
-            $module = $this->get($module);
-        }
-
-        $unknown = [];
-        $missing = [];
-        foreach ($this->dependenciesOf($module) as $depId) {
-            $dep = $this->safeGet($depId);
-            if (! $dep) {
-                $unknown[] = $depId;
-
-                continue;
-            }
-            if (! $this->isEnabled($dep) && ! $this->isMustUse($dep)) {
-                $missing[] = $depId;
-            }
-        }
-
-        return [
-            'missing' => array_values(array_unique($missing)),
-            'unknown' => array_values(array_unique($unknown)),
-        ];
     }
 }

@@ -2,24 +2,26 @@
 
 declare(strict_types=1);
 
-namespace UniGale\Foundation;
+namespace UniGale\Foundation\Providers;
 
 use Carbon\Laravel\ServiceProvider;
 use Illuminate\Filesystem\Filesystem;
 use Illuminate\Support\Env;
-use UniGale\Foundation\Activation\FilesystemActivationDriver;
 use UniGale\Foundation\Console\Commands\ModulesDisableCommand;
 use UniGale\Foundation\Console\Commands\ModulesEnableCommand;
 use UniGale\Foundation\Console\Commands\ModulesStatusCommand;
 use UniGale\Foundation\Console\Commands\OptionsListCommand;
 use UniGale\Foundation\Console\Commands\OptionsSetCommand;
 use UniGale\Foundation\Console\Commands\OptionsUnsetCommand;
-use UniGale\Foundation\Contracts\Module;
-use UniGale\Foundation\Facades\Modules;
-use UniGale\Foundation\Facades\Options;
-use UniGale\Foundation\Options\DatabaseStore;
-use UniGale\Foundation\Options\OptionsManager;
-use UniGale\Foundation\Registries\ModulesRegistry;
+use UniGale\Foundation\Managers\ModulesManager;
+use UniGale\Foundation\Managers\OptionsManager;
+use UniGale\Foundation\Utilities\DatabaseOptionStore;
+use UniGale\Foundation\Utilities\FilesystemActivationDriver;
+use UniGale\Foundation\Utilities\UnigaleManifest;
+use UniGale\Support\Contracts\HasOptions;
+use UniGale\Support\Contracts\Module;
+use UniGale\Support\Facades\Modules;
+use UniGale\Support\Facades\Options;
 
 /**
  * This service provider is initialized during the application bootstrap phase.
@@ -33,7 +35,7 @@ class UnigaleServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
-        $this->app->singleton('unigale-manifest', function () {
+        $this->app->singleton('foundation-manifest', function () {
             return new UnigaleManifest(
                 files: new Filesystem,
                 vendorPath: Env::get('COMPOSER_VENDOR_DIR') ?? base_path('/vendor'),
@@ -41,36 +43,40 @@ class UnigaleServiceProvider extends ServiceProvider
             );
         });
 
-        $this->app->singleton('modules', function () {
-            $registry = new ModulesRegistry(
-                new FilesystemActivationDriver(new Filesystem, $this->app->bootstrapPath('modules.php'))
+        $this->app->singleton('foundation-modules', function () {
+            $registry = new ModulesManager(
+                new FilesystemActivationDriver(new Filesystem, $this->app->bootstrapPath('modules.php')),
             );
 
             $manifestModules = array_map(function (string $moduleClass) {
                 /** @var class-string<Module> $moduleClass */
                 return $this->app->make($moduleClass, ['app' => $this->app]);
-            }, $this->app->get(UnigaleManifest::class)->modules());
+            }, $this->app->get(UnigaleManifest::class)->config('modules'));
 
             $registry->register(...$manifestModules);
 
             return $registry;
         });
 
-        $this->app->singleton('options.store', function () {
-            return new DatabaseStore;
+        $this->app->singleton('foundation-options.store', function () {
+            return new DatabaseOptionStore;
         });
 
-        $this->app->singleton('options', function () {
-            $manager = new OptionsManager(app('options.store'));
-            $manager->registerModules(...app(ModulesRegistry::class)->enabled());
+        $this->app->singleton('foundation-options', function () {
+            $manager = new OptionsManager(app('foundation-options.store'));
+
+            foreach ($this->app->get(Modules::$accessor)->enabled() as $moduleIdentifier => $module) {
+                if ($module instanceof HasOptions) {
+                    $manager->registerDefinition($moduleIdentifier, $module->options());
+                }
+            }
 
             return $manager;
         });
-
         // Keep alias binding to allow remapping and access to initial without triggering callback
-        $this->app->alias('unigale-manifest', UnigaleManifest::class);
-        $this->app->alias('modules', Modules::$accessor);
-        $this->app->alias('options', Options::$accessor);
+        $this->app->alias('foundation-manifest', UnigaleManifest::class);
+        $this->app->alias('foundation-options', Options::$accessor);
+        $this->app->alias('foundation-modules', Modules::$accessor);
     }
 
     public function boot(): void

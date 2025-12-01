@@ -2,17 +2,17 @@
 
 declare(strict_types=1);
 
-namespace UniGale\Foundation\Options;
+namespace UniGale\Foundation\Managers;
 
-use UniGale\Foundation\Contracts\HasOptions;
-use UniGale\Foundation\Contracts\Module;
-use UniGale\Foundation\Contracts\OptionsStore;
-use UniGale\Foundation\Exceptions\DefinitionNotFoundException;
+use UniGale\Support\Contracts\Module;
+use UniGale\Support\Contracts\OptionsStore;
+use UniGale\Support\Exceptions\DefinitionNotFoundException;
+use UniGale\Support\OptionsDefinition;
 
 class OptionsManager
 {
     /** @var array<string, OptionsDefinition> */
-    protected array $definitions = [];
+    protected array $moduleDefinitions = [];
 
     /** @var array<string,mixed> */
     protected array $state = [];
@@ -27,28 +27,18 @@ class OptionsManager
 
     public function __construct(protected OptionsStore $store) {}
 
-    public function registerModules(Module ...$modules): void
+    public function registerDefinition(string $moduleIdentifier, OptionsDefinition $definition): void
     {
-        // Generate definitions
-        foreach ($modules as $module) {
-            if (! is_a($module, HasOptions::class)) {
-                continue;
-            }
-
-            $definition = new OptionsDefinition;
-            $module->options($definition);
-            $this->definitions[$module->identifier()] = $definition;
-        }
+        $this->moduleDefinitions[$moduleIdentifier] = $definition;
     }
 
     public function getDefinition(string $moduleIdentifier): OptionsDefinition
     {
-        if (! array_key_exists($moduleIdentifier, $this->definitions)) {
+        if (! array_key_exists($moduleIdentifier, $this->moduleDefinitions)) {
             throw new DefinitionNotFoundException($moduleIdentifier);
         }
 
-        return $this->definitions[$moduleIdentifier];
-
+        return $this->moduleDefinitions[$moduleIdentifier];
     }
 
     /**
@@ -56,7 +46,7 @@ class OptionsManager
      */
     public function definitions(): array
     {
-        return $this->definitions;
+        return $this->moduleDefinitions;
 
     }
 
@@ -64,25 +54,25 @@ class OptionsManager
     {
         $this->ensureAutoload();
 
-        if (! array_key_exists($key, $this->loadedKeys[$moduleIdentifier ?? '__GLOBAL__'] ?? [])) {
+        if (! array_key_exists($key, $this->loadedKeys[$moduleIdentifier] ?? [])) {
             $value = $this->store->get($key, $moduleIdentifier);
-            $this->state[$moduleIdentifier ?? '__GLOBAL__'][$key] = $value;
-            $this->loadedKeys[$moduleIdentifier ?? '__GLOBAL__'][$key] = true;
+            $this->state[$moduleIdentifier][$key] = $value;
+            $this->loadedKeys[$moduleIdentifier][$key] = true;
         }
         if ($ignoreDefault) {
-            return $this->state[$moduleIdentifier ?? '__GLOBAL__'][$key] ?? null;
+            return $this->state[$moduleIdentifier][$key] ?? null;
         }
 
         return $this->applyDefaults(
-            moduleIdentifier: $moduleIdentifier ?? '__GLOBAL__',
-            options: [$key => $this->state[$moduleIdentifier ?? '__GLOBAL__'][$key] ?? null]
+            moduleIdentifier: $moduleIdentifier,
+            options: [$key => $this->state[$moduleIdentifier][$key] ?? null]
         )[$key];
     }
 
     public function set(string $key, mixed $value, ?string $moduleIdentifier = null): void
     {
-        $this->state[$moduleIdentifier ?? '__GLOBAL__'][$key] = $value;
-        $this->loadedKeys[$moduleIdentifier ?? '__GLOBAL__'][$key] = true;
+        $this->state[$moduleIdentifier][$key] = $value;
+        $this->loadedKeys[$moduleIdentifier][$key] = true;
 
         $this->store->set($key, $value, $moduleIdentifier);
     }
@@ -90,8 +80,8 @@ class OptionsManager
     public function delete(string $key, ?string $moduleIdentifier = null): void
     {
         unset(
-            $this->state[$moduleIdentifier ?? '__GLOBAL__'][$key],
-            $this->loadedKeys[$moduleIdentifier ?? '__GLOBAL__'][$key]
+            $this->state[$moduleIdentifier][$key],
+            $this->loadedKeys[$moduleIdentifier][$key]
         );
 
         $this->store->delete($key, $moduleIdentifier);
@@ -99,14 +89,8 @@ class OptionsManager
 
     public function all(?string $moduleIdentifier = null): array
     {
-        if ($this->fullyLoaded[$moduleIdentifier ?? '__GLOBAL__'] ?? false) {
-            return $this->state[$moduleIdentifier ?? '__GLOBAL__'] ?? [];
-        }
-
-        $definition = $this->getDefinition($moduleIdentifier ?? '__GLOBAL__');
-        $definedKeys = $definition->getDefinedKeys();
-        if (empty($definedKeys)) {
-            return [];
+        if ($this->fullyLoaded[$moduleIdentifier] ?? false) {
+            return $this->state[$moduleIdentifier] ?? [];
         }
 
         $results = $this->applyDefaults(
@@ -115,16 +99,16 @@ class OptionsManager
             insertMissing: true
         );
 
-        $this->state[$moduleIdentifier ?? '__GLOBAL__'] = array_merge(
-            $this->state[$moduleIdentifier ?? '__GLOBAL__'] ?? [],
+        $this->state[$moduleIdentifier] = array_merge(
+            $this->state[$moduleIdentifier] ?? [],
             $results
         );
         foreach ($results as $k => $_) {
-            $this->loadedKeys[$moduleIdentifier ?? '__GLOBAL__'][$k] = true;
+            $this->loadedKeys[$moduleIdentifier][$k] = true;
         }
-        $this->fullyLoaded[$moduleIdentifier ?? '__GLOBAL__'] = true;
+        $this->fullyLoaded[$moduleIdentifier] = true;
 
-        return $this->state[$moduleIdentifier ?? '__GLOBAL__'] ?? [];
+        return $this->state[$moduleIdentifier] ?? [];
     }
 
     public function clear(?string $moduleIdentifier = null): void
@@ -144,9 +128,9 @@ class OptionsManager
      */
     protected function applyDefaults(?string $moduleIdentifier, array $options, bool $insertMissing = false, bool $keepUnregistered = false): array
     {
-        $definition = $this->getDefinition($moduleIdentifier ?? '__GLOBAL__');
+        $definition = $this->getDefinition($moduleIdentifier);
 
-        foreach ($definition->getDefinedKeys() as $key) {
+        foreach (array_keys($definition->all()) as $key) {
             if (! array_key_exists($key, $options) && $insertMissing) {
                 $options[$key] = $definition->getDefaultValue($key);
             }
@@ -167,28 +151,22 @@ class OptionsManager
             return;
         }
 
-        $globalKeys = []; // <- no global options at the moment
-        $modulesKeys = [];
-        foreach ($this->definitions as $moduleIdentifier => $definition) {
+        $groupedKeys = [];
+        foreach ($this->moduleDefinitions as $moduleIdentifier => $definition) {
             $moduleAutoloads = $definition->getAutoloads();
             if (! empty($moduleAutoloads)) {
-                $modulesKeys[$moduleIdentifier] = $moduleAutoloads;
+                $groupedKeys[$moduleIdentifier] = $moduleAutoloads;
             }
         }
 
-        if (empty($modulesKeys) && empty($globalKeys)) {
+        if (empty($groupedKeys)) {
             $this->autoloaded = true;
 
             return;
         }
 
-        $results = $this->store->getMultiples(globalKeys: $globalKeys, modulesKeys: $modulesKeys);
-        foreach ($results['global'] ?? [] as $key => $value) {
-            $this->state['__GLOBAL__'][$key] = $value;
-            $this->loadedKeys['__GLOBAL__'][$key] = true;
-        }
-
-        foreach ($results['modules'] ?? [] as $moduleIdentifier => $values) {
+        $results = $this->store->getMultiples($groupedKeys);
+        foreach ($results as $moduleIdentifier => $values) {
             foreach ($values as $key => $value) {
                 $this->state[$moduleIdentifier][$key] = $value;
                 $this->loadedKeys[$moduleIdentifier][$key] = true;

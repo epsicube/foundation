@@ -2,11 +2,11 @@
 
 declare(strict_types=1);
 
-namespace UniGale\Foundation\Activation;
+namespace UniGale\Foundation\Utilities;
 
 use Illuminate\Filesystem\Filesystem;
-use UniGale\Foundation\Contracts\ActivationDriver;
-use UniGale\Foundation\Contracts\Module;
+use UniGale\Support\Contracts\ActivationDriver;
+use UniGale\Support\Contracts\Module;
 
 class FilesystemActivationDriver implements ActivationDriver
 {
